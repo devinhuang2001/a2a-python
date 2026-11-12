@@ -65,6 +65,35 @@ async def send_http_request(
         return response.json()
 
 
+async def _iter_sse_lines(
+    response: httpx.Response,
+) -> AsyncGenerator[str, None]:
+    """Decode only CR, LF and CRLF as SSE line endings.
+
+    httpx.aiter_lines() follows Unicode splitlines semantics and treats U+0085,
+    U+2028 and U+2029 as line breaks even though SSE does not.
+    """
+    line_chars: list[str] = []
+    after_cr = False
+    async for chunk in response.aiter_text():
+        for char in chunk:
+            if after_cr:
+                after_cr = False
+                if char == '\n':
+                    continue
+            if char == '\r':
+                yield ''.join(line_chars)
+                line_chars.clear()
+                after_cr = True
+            elif char == '\n':
+                yield ''.join(line_chars)
+                line_chars.clear()
+            else:
+                line_chars.append(char)
+    if line_chars:
+        yield ''.join(line_chars)
+
+
 async def parse_sse_stream(
     response: httpx.Response,
 ) -> AsyncGenerator[tuple[str, str], None]:
@@ -75,7 +104,7 @@ async def parse_sse_stream(
     event_name = 'message'
     payload_chunks: list[str] = []
 
-    async for line in response.aiter_lines():
+    async for line in _iter_sse_lines(response):
         raw_line = line.rstrip('\r\n')
 
         # Empty line denotes the completion of the current event block
