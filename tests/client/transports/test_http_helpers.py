@@ -21,7 +21,7 @@ def test_default_sse_error_handler():
 
 @pytest.mark.asyncio
 async def test_parse_sse_stream_edge_cases():
-    async def mock_aiter_lines():
+    async def mock_aiter_text():
         yield ': comment line (should be ignored)\n'
         yield 'event: custom_event\n'
         yield 'data:  hello\n'
@@ -32,7 +32,7 @@ async def test_parse_sse_stream_edge_cases():
         yield '\n'
 
     response = httpx.Response(200)
-    response.aiter_lines = mock_aiter_lines  # type: ignore
+    response.aiter_text = mock_aiter_text  # type: ignore
 
     events = [e async for e in parse_sse_stream(response)]
     assert events == [
@@ -111,3 +111,32 @@ def test_sse_event_source_keeps_caller_accept_whatever_its_case(
     )
 
     assert source._request.headers.get_list('accept') == ['application/json']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('separator', ['\u2028', '\u2029', '\u0085'])
+async def test_parse_sse_stream_preserves_unicode_non_line_terminators(separator):
+    """SSE only uses CR/LF for line endings; JSON Unicode text stays intact."""
+    async def mock_aiter_text():
+        yield 'event: data\r\ndata: {"text":"left'
+        yield separator + 'right"}\r'
+        yield '\n\r\n'
+
+    response = httpx.Response(200)
+    response.aiter_text = mock_aiter_text  # type: ignore
+    events = [e async for e in parse_sse_stream(response)]
+    assert events == [('data', '{"text":"left' + separator + 'right"}')]
+
+
+@pytest.mark.asyncio
+async def test_parse_sse_stream_preserves_crlf_boundaries_and_multiple_events():
+    async def mock_aiter_text():
+        yield 'event: first\r'
+        yield '\ndata: hello\rdata: world\n\n'
+        yield ': ignored\r\nevent: second\ndata: last\r'
+        yield '\n\r\n'
+
+    response = httpx.Response(200)
+    response.aiter_text = mock_aiter_text  # type: ignore
+    events = [e async for e in parse_sse_stream(response)]
+    assert events == [('first', 'hello\nworld'), ('second', 'last')]
